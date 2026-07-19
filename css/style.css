@@ -249,3 +249,34 @@ footer{ border-top:1px solid var(--line-600); padding:34px 0; margin-top:20px; }
 .doc-page h2{ font-size:1.25rem; margin-top:34px; }
 .doc-page ul{ color:var(--text-300); }
 .back-link{ font-family:var(--font-mono); font-size:.82rem; }
+
+/* Logo transparency notice + background remover */
+.logo-transparency-note{
+  font-size:.82rem; color:var(--text-300); background:var(--panel-700);
+  border:1px solid var(--line-600); border-radius:var(--radius-s);
+  padding:10px 14px; margin:14px 0 10px;
+}
+.logo-transparency-note strong{ color:var(--signal-cyan); }
+
+.bg-remover-overlay{
+  position:fixed; inset:0; z-index:200;
+  background:rgba(6,8,11,0.82); backdrop-filter:blur(3px);
+  display:flex; align-items:center; justify-content:center; padding:20px;
+}
+.bg-remover-panel{
+  width:100%; max-width:460px; max-height:90vh; overflow-y:auto;
+  background:var(--panel-800); border:1px solid var(--line-600); border-radius:var(--radius-m);
+  padding:22px;
+}
+.bg-remover-panel h3{ margin-bottom:8px; }
+.bg-remover-panel p{ font-size:.85rem; }
+.bg-remover-canvas-wrap{
+  margin:14px 0; border-radius:var(--radius-s); overflow:hidden; border:1px solid var(--line-500);
+  background-image:
+    linear-gradient(45deg, #333 25%, transparent 25%), linear-gradient(-45deg, #333 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #333 75%), linear-gradient(-45deg, transparent 75%, #333 75%);
+  background-size:16px 16px; background-position:0 0, 0 8px, 8px -8px, -8px 0;
+  background-color:#1a1a1a;
+  display:flex; align-items:center; justify-content:center;
+}
+.bg-remover-canvas-wrap canvas{ max-width:100%; display:block; cursor:crosshair; }

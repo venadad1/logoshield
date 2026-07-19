@@ -60,8 +60,35 @@
         <div class="fname"></div>
       </div>
     </div>
+
+    <p class="logo-transparency-note">
+      Only logos with a <strong>transparent background</strong> can be placed on your video — a logo with a solid background will appear as a visible box instead of just the artwork. Don't have a transparent version? Use the built-in tool below to make one.
+    </p>
+    <button class="btn btn-ghost" id="openBgRemoverBtn" type="button" disabled style="max-width:280px;">Remove background / make transparent</button>
+    <p id="logoWarning" style="display:none;color:var(--tally-red);font-size:.78rem;margin:10px 0 0;"></p>
+
     <input type="file" id="videoInput" accept="video/*" hidden>
     <input type="file" id="logoInput" accept="image/*" hidden>
+
+    <!-- Background remover modal -->
+    <div class="bg-remover-overlay" id="bgRemoverOverlay" style="display:none;">
+      <div class="bg-remover-panel">
+        <h3>Remove background</h3>
+        <p>Click anywhere on the logo's background below to pick the color to remove. This is what makes the logo safe to place on video — the removed area becomes truly transparent, not just white.</p>
+        <div class="bg-remover-canvas-wrap">
+          <canvas id="bgRemoverCanvas"></canvas>
+        </div>
+        <div class="field">
+          <label>Tolerance <span class="val" id="bgTolVal">40</span></label>
+          <input type="range" id="bgTolerance" min="5" max="140" value="40">
+        </div>
+        <p style="font-size:.76rem;color:var(--text-500);margin-top:-6px;">Tip: click directly on the background color (not the artwork). Raise tolerance if some background remains; lower it if the logo itself starts disappearing.</p>
+        <div style="display:flex; gap:10px; margin-top:6px;">
+          <button class="btn btn-ghost" id="bgCancelBtn" type="button" style="flex:1;">Cancel</button>
+          <button class="btn btn-primary" id="bgApplyBtn" type="button" style="flex:1;">Apply &amp; use this logo</button>
+        </div>
+      </div>
+    </div>
 
     <div class="editor">
       <div>
@@ -131,6 +158,10 @@
         <div class="field" id="speedField" style="display:none;">
           <label>Slide speed <span class="val" id="speedVal">140 px/s</span></label>
           <input type="range" id="speedRange" min="40" max="400" value="140">
+        </div>
+        <div class="field" id="animSpeedField" style="display:none;">
+          <label>Animation speed <span class="val" id="animSpeedVal">1.0x</span></label>
+          <input type="range" id="animSpeedRange" min="25" max="300" value="100">
         </div>
       </div>
     </div>
