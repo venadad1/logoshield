@@ -271,24 +271,31 @@ function positionXY(pos, W, H, w, h, m) {
 /* ---------------- Render pipeline (ffmpeg.wasm) ---------------- */
 let ffmpegInstance = null;
 
+// Self-hosted, same-origin copies of @ffmpeg/ffmpeg, @ffmpeg/util, @ffmpeg/core
+// and @ffmpeg/core-mt. This matters: the FFmpeg class internally does
+// `new Worker(new URL("./worker.js", import.meta.url))`, and browsers refuse
+// to construct a dedicated Worker from a cross-origin script URL — no CORS
+// header fixes that. Serving these files from our own domain (resolved via
+// import.meta.url of this module, so it works from any deploy path) avoids
+// the error entirely, instead of loading them from a CDN.
+const VENDOR_BASE = new URL("./vendor/", import.meta.url);
+
 async function loadFFmpeg(onLog) {
   if (ffmpegInstance) return ffmpegInstance;
-  const { FFmpeg } = await import("https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js");
-  const { toBlobURL } = await import("https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js");
+  const { FFmpeg } = await import(new URL("ffmpeg/index.js", VENDOR_BASE).href);
+  const { toBlobURL } = await import(new URL("util/index.js", VENDOR_BASE).href);
   const ffmpeg = new FFmpeg();
   ffmpeg.on("log", ({ message }) => onLog && onLog(message));
 
   const multiThread = window.crossOriginIsolated === true;
-  const base = multiThread
-    ? "https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.6/dist/esm"
-    : "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
+  const coreBase = new URL(multiThread ? "core-mt/" : "core/", VENDOR_BASE);
 
   const config = {
-    coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
-    wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
+    coreURL: await toBlobURL(new URL("ffmpeg-core.js", coreBase).href, "text/javascript"),
+    wasmURL: await toBlobURL(new URL("ffmpeg-core.wasm", coreBase).href, "application/wasm"),
   };
   if (multiThread) {
-    config.workerURL = await toBlobURL(`${base}/ffmpeg-core.worker.js`, "text/javascript");
+    config.workerURL = await toBlobURL(new URL("ffmpeg-core.worker.js", coreBase).href, "text/javascript");
   }
   await ffmpeg.load(config);
   ffmpegInstance = ffmpeg;

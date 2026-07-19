@@ -1,9 +1,9 @@
 # LogoShield Studio
 
 A free, no-API-key, in-browser tool to bake an animated watermark logo into a
-video. Rendering runs entirely client-side with **ffmpeg.wasm** (loaded from
-a CDN on first render) — there's no backend, no upload step, and no server
-cost, which is what keeps it free to deploy and free to use.
+video. Rendering runs entirely client-side with **ffmpeg.wasm**, self-hosted
+under `js/vendor/` (see below for why) — there's no backend, no upload step,
+and no server cost, which is what keeps it free to deploy and free to use.
 
 This is a static site: plain HTML/CSS/JS, no build step, no framework.
 
@@ -17,6 +17,36 @@ Push this folder to a GitHub repo, then connect it to any of:
 
 Or skip Git entirely: on Netlify/Cloudflare Pages you can drag-and-drop this
 folder directly in their dashboard for an instant deploy.
+
+## Why ffmpeg.wasm is self-hosted (not loaded from a CDN)
+
+`js/vendor/` contains local copies of `@ffmpeg/ffmpeg`, `@ffmpeg/util`,
+`@ffmpeg/core`, and `@ffmpeg/core-mt`. This isn't just a preference — loading
+`@ffmpeg/ffmpeg` from a CDN throws at runtime:
+
+```
+Failed to construct 'Worker': Script at 'https://.../worker.js' cannot be
+accessed from origin 'https://your-site.pages.dev'.
+```
+
+The `FFmpeg` class internally does `new Worker(new URL("./worker.js",
+import.meta.url))`. Browsers refuse to construct a dedicated `Worker` from a
+cross-origin script URL — this is a hard platform restriction, not something
+a CORS header can fix. Self-hosting the package means `import.meta.url`
+resolves to your own domain, so the worker is same-origin and the error goes
+away.
+
+`js/app.js` resolves the vendor path via `new URL("./vendor/", import.meta.url)`,
+so this works regardless of which subpath the site is deployed under. If you
+upgrade the ffmpeg.wasm packages later, re-run:
+
+```
+npm install @ffmpeg/ffmpeg @ffmpeg/util @ffmpeg/core @ffmpeg/core-mt --prefix /tmp/ffmpeg-vendor
+```
+
+then copy the runtime `.js`/`.wasm` files from each package's `dist/esm/`
+folder into the matching `js/vendor/<name>/` folder here (skip `.d.ts`
+files).
 
 ## Two-page split: ads page vs. isolated editor page
 
@@ -78,6 +108,7 @@ editor.html            the actual tool: dropzones, live preview, controls, rende
 about.html / faq.html / privacy-policy.html / terms.html / contact.html
 css/style.css          design tokens + shared layout (rails, sticky bottom bar, editor grid)
 js/app.js              uploads, live canvas preview, watermark baking, ffmpeg.wasm pipeline (used by editor.html)
+js/vendor/             self-hosted @ffmpeg/ffmpeg, @ffmpeg/util, @ffmpeg/core, @ffmpeg/core-mt
 robots.txt / sitemap.xml
 _headers / vercel.json / netlify.toml   base headers site-wide + COOP/COEP scoped to /editor.html only
 ```
