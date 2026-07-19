@@ -532,7 +532,13 @@ async function handleRender() {
 
     setProgress(8, "Baking logo layer…");
     const asset = await renderStaticLogoPNG();
-    const overlayInputArgs = ["-loop", "1", "-i", "logo.png"];
+    // Without an explicit framerate, a looped still image defaults to 25 fps
+    // in ffmpeg. If the source video runs at 30/50/60 fps, the overlay has to
+    // reuse the same logo frame for several video frames in a row, which is
+    // exactly what makes pulse/rotate/fade/marquee look like they stutter
+    // instead of animating smoothly. Forcing 60 fps here covers every common
+    // video frame rate, so the overlay always has a fresh value to draw.
+    const overlayInputArgs = ["-loop", "1", "-framerate", "60", "-i", "logo.png"];
 
     // Shared first stage for every variant: give the PNG a real alpha
     // channel and apply the requested opacity as a constant multiplier.

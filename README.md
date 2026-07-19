@@ -114,6 +114,13 @@ multi-thread speed boost.
   that and produced a solid black box behind the logo in the export instead
   of transparency), so keeping the whole pipeline PNG-in → ffmpeg-filters →
   MP4-out avoids that failure mode entirely.
+- **Smooth animation, any video frame rate:** the looped logo PNG input is
+  forced to `-framerate 60`. Without it, ffmpeg defaults a looped still
+  image to 25 fps regardless of the source video's actual rate — so a
+  30/50/60 fps video would only get a fresh logo frame every couple of
+  video frames, and pulse/rotate/fade/marquee would visibly stutter instead
+  of animating smoothly. 60 fps comfortably covers every common video frame
+  rate.
 - **Rendering speed:** the app uses `-preset ultrafast` and copies the audio
   stream untouched to minimize work, plus multi-threading when cross-origin
   isolation is available. It will still be bounded by the visitor's hardware
