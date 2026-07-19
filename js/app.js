@@ -311,7 +311,10 @@ async function loadFFmpeg(onLog) {
   return ffmpeg;
 }
 
-// Bake size/opacity/tint into a still transparent PNG (used for static / marquee / shield).
+// Bake size + color tint into a still transparent PNG. Used as the overlay
+// source for every variant (including the animated ones) — opacity and any
+// time-based animation are applied afterwards inside the ffmpeg filter
+// graph itself, not baked into the bitmap. Real alpha channel end to end.
 function renderStaticLogoPNG() {
   const W = state.videoMeta.width;
   const logoW = Math.max(8, Math.round(W * (state.sizePct / 100)));
@@ -319,69 +322,32 @@ function renderStaticLogoPNG() {
   const c = document.createElement("canvas");
   c.width = logoW; c.height = logoH;
   const ctx = c.getContext("2d");
-  ctx.globalAlpha = state.opacity;
   ctx.drawImage(state.logoImg, 0, 0, logoW, logoH);
   if (state.tintStrength > 0) {
     ctx.globalCompositeOperation = "source-atop";
-    ctx.globalAlpha = state.opacity * state.tintStrength;
+    ctx.globalAlpha = state.tintStrength;
     ctx.fillStyle = state.tintColor;
     ctx.fillRect(0, 0, logoW, logoH);
   }
   return new Promise((resolve) => c.toBlob((b) => resolve({ blob: b, w: logoW, h: logoH }), "image/png"));
 }
 
-// Bake a short looping transparent WebM (VP9+alpha) for pulse / rotate / fade.
-async function renderAnimatedLogoClip() {
-  const W = state.videoMeta.width;
-  const baseW = Math.max(8, Math.round(W * (state.sizePct / 100)));
-  const baseH = Math.round(baseW * (state.logoImg.naturalHeight / state.logoImg.naturalWidth));
-  const pad = Math.round(Math.max(baseW, baseH) * 0.25); // headroom for pulse/rotate
-  const cw = baseW + pad * 2, ch = baseH + pad * 2;
-  const canvas = document.createElement("canvas");
-  canvas.width = cw; canvas.height = ch;
-  const ctx = canvas.getContext("2d", { alpha: true });
-
-  const fps = 25, loopSeconds = 4;
-  const stream = canvas.captureStream(fps);
-  const recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9", videoBitsPerSecond: 4_000_000 });
-  const chunks = [];
-  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-
-  const frameCount = fps * loopSeconds;
-  let frame = 0;
-
-  return new Promise((resolve) => {
-    recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
-    recorder.start();
-    const drawNext = () => {
-      const t = frame / fps;
-      ctx.clearRect(0, 0, cw, ch);
-      ctx.save();
-      ctx.translate(cw / 2, ch / 2);
-      let alpha = state.opacity, scale = 1, rot = 0;
-      if (state.variant === "pulse") scale = 1 + 0.1 * Math.sin(t * 2 * Math.PI / loopSeconds * 2);
-      if (state.variant === "rotate") rot = (t / loopSeconds) * Math.PI * 2;
-      if (state.variant === "fade") alpha = state.opacity * (0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * 2 * Math.PI / loopSeconds)));
-      ctx.rotate(rot);
-      ctx.scale(scale, scale);
-      ctx.globalAlpha = alpha;
-      ctx.drawImage(state.logoImg, -baseW / 2, -baseH / 2, baseW, baseH);
-      if (state.tintStrength > 0) {
-        ctx.globalCompositeOperation = "source-atop";
-        ctx.globalAlpha = alpha * state.tintStrength;
-        ctx.fillStyle = state.tintColor;
-        ctx.fillRect(-baseW / 2, -baseH / 2, baseW, baseH);
-      }
-      ctx.restore();
-      frame++;
-      if (frame < frameCount) {
-        setTimeout(drawNext, 1000 / fps);
-      } else {
-        recorder.stop();
-      }
-    };
-    drawNext();
-  }).then((blob) => ({ blob, w: cw, h: ch }));
+// Builds a chain of alternating alpha fade-out/fade-in segments covering the
+// full video duration, for the "fade ghost" variant. Pure ffmpeg filters —
+// no pre-recorded clip involved, so there's no alpha-encoding step that can
+// go wrong.
+function buildFadeChain(duration) {
+  const half = 1.5; // seconds per half-cycle
+  const D = Math.max(duration || 6, half * 2);
+  const parts = [];
+  let t = 0, out = true;
+  while (t < D - 0.01) {
+    const d = Math.min(half, D - t);
+    parts.push(`fade=t=${out ? "out" : "in"}:st=${t.toFixed(2)}:d=${d.toFixed(2)}:alpha=1`);
+    t += d;
+    out = !out;
+  }
+  return parts.join(",");
 }
 
 async function handleRender() {
@@ -394,67 +360,85 @@ async function handleRender() {
   try {
     const W = state.videoMeta.width, H = state.videoMeta.height;
     const margin = Math.round(W * 0.02);
-    const isAnimated = ["pulse", "rotate", "fade"].includes(state.variant);
 
-    let overlayAsset, overlayInputArgs, filterComplex, outMap;
+    setProgress(8, "Baking logo layer…");
+    const asset = await renderStaticLogoPNG();
+    const overlayInputArgs = ["-loop", "1", "-i", "logo.png"];
 
-    if (isAnimated) {
-      setProgress(5, "Baking animated logo layer…");
-      overlayAsset = await renderAnimatedLogoClip();
-      overlayInputArgs = ["-stream_loop", "-1", "-i", "overlay.webm"];
-      const pos = positionXY(state.position, W, H, overlayAsset.w, overlayAsset.h, margin);
-      filterComplex = `[0:v][1:v]overlay=x=${Math.round(pos.x)}:y=${Math.round(pos.y)}:shortest=1[outv]`;
-    } else if (state.variant === "shield") {
-      const asset = await renderStaticLogoPNG();
-      overlayAsset = asset;
-      overlayInputArgs = ["-loop", "1", "-i", "logo.png"];
+    // Shared first stage for every variant: give the PNG a real alpha
+    // channel and apply the requested opacity as a constant multiplier.
+    // Everything downstream (position, animation) works on top of this.
+    const base = `[1:v]format=rgba,colorchannelmixer=aa=${state.opacity.toFixed(3)}`;
+    let filterComplex;
+
+    if (state.variant === "shield") {
       const cols = state.density, rows = state.density;
       const cellW = W / cols, cellH = H / rows;
-      const parts = [];
+      const parts = [
+        `${base}[wmA]`,
+        `[wmA]split=2[wmA1][wmA2]`,
+        `[wmA1]colorchannelmixer=aa=0.65[wmHi]`,
+        `[wmA2]colorchannelmixer=aa=0.4[wmLo]`,
+      ];
       let cur = "0:v";
       let idx = 0;
+      const total = rows * cols;
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const offset = (r % 2 === 1) ? cellW / 2 : 0;
           const x = Math.round(((c * cellW + offset) % W) - asset.w / 2 + cellW / 2 - asset.w / 2);
           const y = Math.round(r * cellH + cellH / 2 - asset.h / 2);
-          const next = (idx === rows * cols - 1) ? "outv" : `t${idx}`;
-          parts.push(`[${cur}][1:v]overlay=x=${x}:y=${y}${idx === rows * cols - 1 ? ":shortest=1" : ""}[${next}]`);
+          const src = (idx % 2 === 0) ? "wmHi" : "wmLo";
+          const next = (idx === total - 1) ? "outv" : `t${idx}`;
+          parts.push(`[${cur}][${src}]overlay=x=${x}:y=${y}${idx === total - 1 ? ":shortest=1" : ""}[${next}]`);
           cur = next;
           idx++;
         }
       }
       filterComplex = parts.join(";");
+
     } else if (state.variant === "marquee") {
-      const asset = await renderStaticLogoPNG();
-      overlayAsset = asset;
-      overlayInputArgs = ["-loop", "1", "-i", "logo.png"];
       const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
       const span = W + asset.w;
-      filterComplex = `[0:v][1:v]overlay=x='mod(t*${state.speed}\\,${span})-${asset.w}':y=${Math.round(pos.y)}:shortest=1[outv]`;
-    } else {
-      const asset = await renderStaticLogoPNG();
-      overlayAsset = asset;
-      overlayInputArgs = ["-loop", "1", "-i", "logo.png"];
+      filterComplex = `${base}[wm];[0:v][wm]overlay=x='mod(t*${state.speed}\,${span})-${asset.w}':y=${Math.round(pos.y)}:shortest=1[outv]`;
+
+    } else if (state.variant === "pulse") {
       const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
-      filterComplex = `[0:v][1:v]overlay=x=${Math.round(pos.x)}:y=${Math.round(pos.y)}:shortest=1[outv]`;
+      const cx = pos.x + asset.w / 2, cy = pos.y + asset.h / 2;
+      filterComplex =
+        `${base}[wmA];` +
+        `[wmA]scale=w='iw*(1+0.08*sin(2*PI*t/3))':h='ih*(1+0.08*sin(2*PI*t/3))':eval=frame[wm];` +
+        `[0:v][wm]overlay=x='${cx}-w/2':y='${cy}-h/2':shortest=1[outv]`;
+
+    } else if (state.variant === "rotate") {
+      const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
+      const cx = pos.x + asset.w / 2, cy = pos.y + asset.h / 2;
+      filterComplex =
+        `${base}[wmA];` +
+        `[wmA]rotate=a='t*0.6':ow='hypot(iw\,ih)':oh='hypot(iw\,ih)':c=none[wm];` +
+        `[0:v][wm]overlay=x='${cx}-w/2':y='${cy}-h/2':shortest=1[outv]`;
+
+    } else if (state.variant === "fade") {
+      const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
+      const fadeChain = buildFadeChain(state.videoMeta.duration);
+      filterComplex = `${base},${fadeChain}[wm];[0:v][wm]overlay=x=${Math.round(pos.x)}:y=${Math.round(pos.y)}:shortest=1[outv]`;
+
+    } else {
+      // static corner (default)
+      const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
+      filterComplex = `${base}[wm];[0:v][wm]overlay=x=${Math.round(pos.x)}:y=${Math.round(pos.y)}:shortest=1[outv]`;
     }
 
-    setProgress(15, "Loading render engine…");
+    setProgress(20, "Loading render engine…");
     const ffmpeg = await loadFFmpeg((msg) => { /* console.debug(msg) */ });
     ffmpeg.on("progress", ({ progress }) => {
-      setProgress(20 + Math.min(78, Math.round(progress * 78)), "Rendering with protected watermark…");
+      setProgress(25 + Math.min(73, Math.round(progress * 73)), "Rendering with protected watermark…");
     });
 
     const inExt = (state.videoFile.name.split(".").pop() || "mp4").toLowerCase();
     const inName = "input." + inExt;
     await ffmpeg.writeFile(inName, new Uint8Array(await state.videoFile.arrayBuffer()));
-
-    if (isAnimated) {
-      await ffmpeg.writeFile("overlay.webm", new Uint8Array(await overlayAsset.blob.arrayBuffer()));
-    } else {
-      await ffmpeg.writeFile("logo.png", new Uint8Array(await overlayAsset.blob.arrayBuffer()));
-    }
+    await ffmpeg.writeFile("logo.png", new Uint8Array(await asset.blob.arrayBuffer()));
 
     const outName = "output.mp4";
     const args = [
@@ -468,7 +452,7 @@ async function handleRender() {
       outName,
     ];
 
-    setProgress(20, "Encoding…");
+    setProgress(25, "Encoding…");
     await ffmpeg.exec(args);
 
     setProgress(98, "Preparing download…");

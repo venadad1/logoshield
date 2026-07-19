@@ -105,6 +105,15 @@ multi-thread speed boost.
   but everything runs in the visitor's browser tab, so the real limit is
   their device's RAM/CPU. Very long or high-resolution sources will be slower
   and more memory-hungry than a server-grade encoder would be.
+- **Animated variants (pulse / rotate / fade):** these are built entirely
+  inside the ffmpeg filter graph using time-based expressions (`scale`
+  with `eval=frame`, `rotate=a='t*...'`, chained `fade` filters), applied to
+  a single still transparent PNG. There's no intermediate recorded video
+  clip involved. This matters: browsers don't reliably encode a real alpha
+  channel through `MediaRecorder` (an earlier version of this tool tried
+  that and produced a solid black box behind the logo in the export instead
+  of transparency), so keeping the whole pipeline PNG-in → ffmpeg-filters →
+  MP4-out avoids that failure mode entirely.
 - **Rendering speed:** the app uses `-preset ultrafast` and copies the audio
   stream untouched to minimize work, plus multi-threading when cross-origin
   isolation is available. It will still be bounded by the visitor's hardware
