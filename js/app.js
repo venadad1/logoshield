@@ -271,14 +271,21 @@ function positionXY(pos, W, H, w, h, m) {
 /* ---------------- Render pipeline (ffmpeg.wasm) ---------------- */
 let ffmpegInstance = null;
 
-// Self-hosted, same-origin copies of @ffmpeg/ffmpeg, @ffmpeg/util, @ffmpeg/core
-// and @ffmpeg/core-mt. This matters: the FFmpeg class internally does
-// `new Worker(new URL("./worker.js", import.meta.url))`, and browsers refuse
-// to construct a dedicated Worker from a cross-origin script URL — no CORS
-// header fixes that. Serving these files from our own domain (resolved via
-// import.meta.url of this module, so it works from any deploy path) avoids
-// the error entirely, instead of loading them from a CDN.
+// The @ffmpeg/ffmpeg package itself is self-hosted under js/vendor/ (a few
+// KB total). That's the part that matters for same-origin: its FFmpeg class
+// internally does `new Worker(new URL("./worker.js", import.meta.url))`,
+// and browsers refuse to construct a dedicated Worker from a cross-origin
+// script URL — no CORS header fixes that. Resolving it via import.meta.url
+// of *this* module means it works from any deploy path.
+//
+// The multi-megabyte ffmpeg-core.wasm files are intentionally NOT vendored
+// into this repo — static hosts like Cloudflare Pages reject any single
+// deployed file over 25 MB, and the compiled cores are 30+ MB each. Loading
+// them is a plain fetch() (via toBlobURL below), which cross-origin CORS
+// handles fine, so they're pulled from a CDN at render time instead.
 const VENDOR_BASE = new URL("./vendor/", import.meta.url);
+const CORE_CDN_BASE = "https://cdn.jsdelivr.net/npm";
+const CORE_VERSION = "0.12.6";
 
 async function loadFFmpeg(onLog) {
   if (ffmpegInstance) return ffmpegInstance;
@@ -288,14 +295,16 @@ async function loadFFmpeg(onLog) {
   ffmpeg.on("log", ({ message }) => onLog && onLog(message));
 
   const multiThread = window.crossOriginIsolated === true;
-  const coreBase = new URL(multiThread ? "core-mt/" : "core/", VENDOR_BASE);
+  const coreBase = multiThread
+    ? `${CORE_CDN_BASE}/@ffmpeg/core-mt@${CORE_VERSION}/dist/esm`
+    : `${CORE_CDN_BASE}/@ffmpeg/core@${CORE_VERSION}/dist/esm`;
 
   const config = {
-    coreURL: await toBlobURL(new URL("ffmpeg-core.js", coreBase).href, "text/javascript"),
-    wasmURL: await toBlobURL(new URL("ffmpeg-core.wasm", coreBase).href, "application/wasm"),
+    coreURL: await toBlobURL(`${coreBase}/ffmpeg-core.js`, "text/javascript"),
+    wasmURL: await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, "application/wasm"),
   };
   if (multiThread) {
-    config.workerURL = await toBlobURL(new URL("ffmpeg-core.worker.js", coreBase).href, "text/javascript");
+    config.workerURL = await toBlobURL(`${coreBase}/ffmpeg-core.worker.js`, "text/javascript");
   }
   await ffmpeg.load(config);
   ffmpegInstance = ffmpeg;

@@ -18,11 +18,11 @@ Push this folder to a GitHub repo, then connect it to any of:
 Or skip Git entirely: on Netlify/Cloudflare Pages you can drag-and-drop this
 folder directly in their dashboard for an instant deploy.
 
-## Why ffmpeg.wasm is self-hosted (not loaded from a CDN)
+## Why ffmpeg.wasm loading is split: small parts self-hosted, big parts from a CDN
 
-`js/vendor/` contains local copies of `@ffmpeg/ffmpeg`, `@ffmpeg/util`,
-`@ffmpeg/core`, and `@ffmpeg/core-mt`. This isn't just a preference — loading
-`@ffmpeg/ffmpeg` from a CDN throws at runtime:
+`js/vendor/` contains local copies of just `@ffmpeg/ffmpeg` and `@ffmpeg/util`
+(a few KB total — no `.wasm` in there). This isn't just a preference, it
+fixes a real runtime error:
 
 ```
 Failed to construct 'Worker': Script at 'https://.../worker.js' cannot be
@@ -31,22 +31,32 @@ accessed from origin 'https://your-site.pages.dev'.
 
 The `FFmpeg` class internally does `new Worker(new URL("./worker.js",
 import.meta.url))`. Browsers refuse to construct a dedicated `Worker` from a
-cross-origin script URL — this is a hard platform restriction, not something
-a CORS header can fix. Self-hosting the package means `import.meta.url`
+cross-origin script URL — a hard platform restriction, not something a CORS
+header can fix. Self-hosting just this small package means `import.meta.url`
 resolves to your own domain, so the worker is same-origin and the error goes
-away.
+away. `js/app.js` resolves the vendor path via
+`new URL("./vendor/", import.meta.url)`, so this works from any deploy path.
 
-`js/app.js` resolves the vendor path via `new URL("./vendor/", import.meta.url)`,
-so this works regardless of which subpath the site is deployed under. If you
-upgrade the ffmpeg.wasm packages later, re-run:
+The compiled **`ffmpeg-core.wasm` files are intentionally *not* vendored** —
+they're 30+ MB each, and most static hosts (Cloudflare Pages included) reject
+any single deployed file over 25 MB, which would silently break the whole
+deploy. Loading the core is a plain `fetch()` under the hood (via
+`toBlobURL`), and that's not subject to the Worker same-origin restriction —
+cross-origin `fetch()` just needs CORS, which the jsDelivr CDN already sends.
+So the cores keep loading from
+`https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/...` and
+`https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.6/...` at render time.
+
+If you ever need to update the self-hosted part, re-install and copy just
+the small package:
 
 ```
-npm install @ffmpeg/ffmpeg @ffmpeg/util @ffmpeg/core @ffmpeg/core-mt --prefix /tmp/ffmpeg-vendor
+npm install @ffmpeg/ffmpeg@0.12.10 @ffmpeg/util@0.12.1 --prefix /tmp/ffmpeg-vendor
 ```
 
-then copy the runtime `.js`/`.wasm` files from each package's `dist/esm/`
-folder into the matching `js/vendor/<name>/` folder here (skip `.d.ts`
-files).
+then copy the `.js` files (skip `.d.ts`) from each package's `dist/esm/`
+folder into the matching `js/vendor/<name>/` folder here. Leave `core` /
+`core-mt` alone — they should stay on the CDN.
 
 ## Two-page split: ads page vs. isolated editor page
 
@@ -108,7 +118,7 @@ editor.html            the actual tool: dropzones, live preview, controls, rende
 about.html / faq.html / privacy-policy.html / terms.html / contact.html
 css/style.css          design tokens + shared layout (rails, sticky bottom bar, editor grid)
 js/app.js              uploads, live canvas preview, watermark baking, ffmpeg.wasm pipeline (used by editor.html)
-js/vendor/             self-hosted @ffmpeg/ffmpeg, @ffmpeg/util, @ffmpeg/core, @ffmpeg/core-mt
+js/vendor/             self-hosted @ffmpeg/ffmpeg + @ffmpeg/util only (small; wasm cores load from CDN)
 robots.txt / sitemap.xml
 _headers / vercel.json / netlify.toml   base headers site-wide + COOP/COEP scoped to /editor.html only
 ```
