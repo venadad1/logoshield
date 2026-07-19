@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Watermark Editor — LogoShield Studio</title>
+<meta name="description" content="Add an animated, protected watermark logo to your video. Adjust size, color, position and animation, then render locally in your browser.">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://logoshield.app/editor.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<style>
+  /* This page runs isolated (COOP/COEP) for faster multi-threaded rendering,
+     so intentionally no ad rails/bottom bar here — see index.html for those. */
+  .editor-page-shell{ max-width:1180px; margin:0 auto; padding:26px 20px 90px; }
+  .editor-topbar{ display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; gap:12px; flex-wrap:wrap; }
+  .isolation-badge{
+    font-family:var(--font-mono); font-size:.72rem; color:var(--ok-green);
+    border:1px solid var(--ok-green); background:rgba(61,220,151,0.08);
+    padding:5px 10px; border-radius:99px;
+  }
+</style>
+</head>
+<body>
+<header class="topnav">
+  <div class="topnav-inner">
+    <a href="index.html" class="brand"><span class="brand-mark">LS</span> LogoShield Studio</a>
+    <ul class="navlinks">
+      <li><a href="index.html#features">Features</a></li>
+      <li><a href="faq.html">FAQ</a></li>
+      <li><a href="about.html">About</a></li>
+    </ul>
+    <a href="index.html" class="nav-cta" style="background:transparent;border:1px solid var(--line-500);color:var(--text-300);">← Back to home</a>
+  </div>
+</header>
+
+<main class="editor-page-shell">
+  <div class="editor-topbar">
+    <div>
+      <span class="eyebrow"><span class="dot"></span> Editor workspace</span>
+      <h1 style="font-size:1.5rem;margin-top:10px;">Watermark your video</h1>
+    </div>
+    <span class="isolation-badge" id="isoBadge">checking render engine…</span>
+  </div>
+
+  <div class="viewfinder">
+    <span class="vf-corner vf-tl"></span><span class="vf-corner vf-tr"></span>
+    <span class="vf-corner vf-bl"></span><span class="vf-corner vf-br"></span>
+
+    <div class="dropzones">
+      <div class="dropzone" id="videoDrop">
+        <h4>1 · Drop your video</h4>
+        <p>Any length, any common format (MP4, MOV, WebM, MKV, AVI…)</p>
+        <div class="fname"></div>
+      </div>
+      <div class="dropzone" id="logoDrop">
+        <h4>2 · Drop your logo</h4>
+        <p>PNG with transparency works best</p>
+        <div class="fname"></div>
+      </div>
+    </div>
+    <input type="file" id="videoInput" accept="video/*" hidden>
+    <input type="file" id="logoInput" accept="image/*" hidden>
+
+    <div class="editor">
+      <div>
+        <div class="stage" id="stage">
+          <div class="stage-empty">Your live preview appears here once a video and logo are loaded.</div>
+          <div id="previewWrap">
+            <video id="previewVideo" muted loop playsinline></video>
+            <canvas id="overlayCanvas"></canvas>
+          </div>
+        </div>
+
+        <div class="field" id="manualDims" style="display:none; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:14px;">
+          <div><label>Width<span class="val">px</span></label><input type="number" id="mWidth" value="1280"></div>
+          <div><label>Height<span class="val">px</span></label><input type="number" id="mHeight" value="720"></div>
+          <div><label>Duration<span class="val">sec</span></label><input type="number" id="mDuration" value="10"></div>
+        </div>
+
+        <button class="btn btn-primary" id="renderBtn" disabled style="margin-top:16px;">Render protected video</button>
+        <div class="progress" id="progress"><div></div></div>
+        <div class="status-line" id="statusLine"></div>
+        <div class="result-box" id="resultBox">
+          ✅ Your watermarked video is ready — <a class="download" href="#" download>download the MP4</a>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3><span class="step-no">3</span> Watermark settings</h3>
+
+        <div class="variant-grid">
+          <div class="variant-card active" data-variant="static"><strong>Static corner</strong>fixed, classic</div>
+          <div class="variant-card" data-variant="marquee"><strong>Sliding marquee</strong>moves across frame</div>
+          <div class="variant-card" data-variant="pulse"><strong>Pulse</strong>gentle breathing scale</div>
+          <div class="variant-card" data-variant="rotate"><strong>Slow rotate</strong>rotating badge</div>
+          <div class="variant-card" data-variant="fade"><strong>Fade ghost</strong>opacity breathing</div>
+          <div class="variant-card" data-variant="shield"><strong>Diagonal shield</strong>full-frame tiling</div>
+        </div>
+
+        <div id="positionBlock">
+          <label style="font-size:.8rem;color:var(--text-300);display:block;margin-bottom:8px;">Position</label>
+          <div class="pos-grid">
+            <div class="pos-dot" data-pos="tl"></div><div class="pos-dot" data-pos="tc"></div><div class="pos-dot" data-pos="tr"></div>
+            <div class="pos-dot" data-pos="ml"></div><div class="pos-dot" data-pos="mc"></div><div class="pos-dot" data-pos="mr"></div>
+            <div class="pos-dot" data-pos="bl"></div><div class="pos-dot" data-pos="bc"></div><div class="pos-dot active" data-pos="br"></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Size <span class="val" id="sizeVal">14%</span></label>
+          <input type="range" id="sizeRange" min="4" max="40" value="14">
+        </div>
+        <div class="field">
+          <label>Opacity <span class="val" id="opacityVal">85%</span></label>
+          <input type="range" id="opacityRange" min="10" max="100" value="85">
+        </div>
+        <div class="field">
+          <label>Color tint intensity <span class="val" id="tintVal">0%</span></label>
+          <input type="range" id="tintStrengthRange" min="0" max="100" value="0">
+        </div>
+        <div class="field">
+          <label>Tint color</label>
+          <input type="color" id="tintColor" value="#35c7f0">
+        </div>
+        <div class="field" id="densityField" style="display:none;">
+          <label>Tile density <span class="val" id="densityVal">3 x 3</span></label>
+          <input type="range" id="densityRange" min="2" max="5" value="3">
+        </div>
+        <div class="field" id="speedField" style="display:none;">
+          <label>Slide speed <span class="val" id="speedVal">140 px/s</span></label>
+          <input type="range" id="speedRange" min="40" max="400" value="140">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p style="margin-top:26px;font-size:.82rem;color:var(--text-500);">
+    Nothing you drop here is uploaded — video and logo are processed locally in this browser tab.
+    Read more in the <a href="privacy-policy.html">Privacy Policy</a>.
+  </p>
+</main>
+
+<footer>
+  <div class="container footer-grid">
+    <div>
+      <a href="index.html" class="brand"><span class="brand-mark">LS</span> LogoShield Studio</a>
+    </div>
+    <ul class="footer-links">
+      <li><a href="about.html">About</a></li>
+      <li><a href="faq.html">FAQ</a></li>
+      <li><a href="privacy-policy.html">Privacy Policy</a></li>
+      <li><a href="terms.html">Terms of Use</a></li>
+      <li><a href="contact.html">Contact</a></li>
+    </ul>
+  </div>
+</footer>
+
+<script type="module" src="js/app.js"></script>
+<script>
+  window.addEventListener("load", () => {
+    const badge = document.getElementById("isoBadge");
+    if (window.crossOriginIsolated) {
+      badge.textContent = "multi-threaded render engine active";
+    } else {
+      badge.textContent = "single-threaded render engine (still works)";
+      badge.style.color = "var(--text-500)";
+      badge.style.borderColor = "var(--line-500)";
+      badge.style.background = "transparent";
+    }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>About LogoShield Studio — Free In-Browser Video Watermark Tool</title>
+<meta name="description" content="LogoShield Studio is a free, in-browser tool for stamping animated, tamper-resistant logos onto video. Learn how it works and why nothing you upload leaves your device.">
+<link rel="canonical" href="https://logoshield.app/about.html">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="topnav">
+  <div class="topnav-inner">
+    <a href="/" class="brand"><span class="brand-mark">LS</span> LogoShield Studio</a>
+    <ul class="navlinks">
+      <li><a href="editor.html">Editor</a></li>
+      <li><a href="about.html">About</a></li>
+      <li><a href="faq.html">FAQ</a></li>
+    </ul>
+    <a href="editor.html" class="nav-cta">Watermark a video</a>
+  </div>
+</header>
+
+<main class="doc-page">
+  <p class="back-link"><a href="/">← Back to editor</a></p>
+  <h1>About LogoShield Studio</h1>
+  <p>LogoShield Studio started from a simple frustration: creators who post clips on marketplaces, group chats, and public feeds kept watching their footage get re-uploaded with the branding cropped or painted out. Most watermark tools on the market ask for a subscription, a file-size-limited upload, or both — and still place a single logo in one corner that any modern inpainting tool handles in seconds.</p>
+
+  <h2>What we built</h2>
+  <p>LogoShield Studio is a browser-based editor that bakes an animated logo permanently into your video using FFmpeg compiled to WebAssembly — the same engine that powers a large share of professional video pipelines, running locally on your machine instead of a paid cloud server. That's what makes the tool free to use without an API key: there is no metered backend to pay for.</p>
+
+  <h2>Why full-frame protection matters</h2>
+  <p>A logo in a single corner is easy to identify and easy to patch. Our Diagonal Shield mode instead tiles semi-transparent copies of your logo across the whole frame, so there is no isolated region for an automated tool to reconstruct cleanly. We're upfront that no watermark is truly impossible to remove with enough manual work — what full-frame tiling does is make quick, automated, damage-free removal impractical.</p>
+
+  <h2>Privacy by architecture, not by policy</h2>
+  <p>Because processing happens in your browser tab, your source video and logo are never transmitted to our servers as part of editing or rendering. See the <a href="privacy-policy.html">Privacy Policy</a> for the full detail, including how advertising on this page works.</p>
+
+  <h2>Who it's for</h2>
+  <p>Independent filmmakers, stock footage sellers, course creators, social clippers, and any small team that needs a credible, low-cost way to keep its name attached to its footage.</p>
+
+  <p>Questions or feedback? <a href="contact.html">Get in touch</a>.</p>
+</main>
+
+<footer>
+  <div class="container footer-grid">
+    <div>
+      <a href="/" class="brand"><span class="brand-mark">LS</span> LogoShield Studio</a>
+    </div>
+    <ul class="footer-links">
+      <li><a href="about.html">About</a></li>
+      <li><a href="faq.html">FAQ</a></li>
+      <li><a href="privacy-policy.html">Privacy Policy</a></li>
+      <li><a href="terms.html">Terms of Use</a></li>
+      <li><a href="contact.html">Contact</a></li>
+    </ul>
+  </div>
+</footer>
+</body>
+</html>
