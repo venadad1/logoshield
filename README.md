@@ -121,6 +121,33 @@ multi-thread speed boost.
   video frames, and pulse/rotate/fade/marquee would visibly stutter instead
   of animating smoothly. 60 fps comfortably covers every common video frame
   rate.
+- **Constant frame rate normalization:** the main video is always passed
+  through `fps=30` before compositing, and the output is encoded with
+  `-fps_mode cfr`. Many real-world clips (phone recordings, screen
+  recordings, forwarded videos) are variable frame rate — our time-based
+  expressions (marquee's x position, pulse's scale, rotate's angle) are each
+  evaluated correctly for a frame's true timestamp, but if the underlying
+  frames arrive at uneven intervals, the resulting motion still looks
+  jittery/trembling on playback even though the math is technically
+  correct. Resampling to a solid constant rate fixes that at the source.
+- **Diagonal Shield renders as one overlay, not a dozen-plus:** the tiled
+  pattern (all tiles, at their final per-tile opacity) is composited once,
+  client-side, into a single full-resolution transparent PNG. An earlier
+  version chained one ffmpeg `overlay` filter per tile (up to 25 for a 5×5
+  density), which could overwhelm the ffmpeg.wasm virtual filesystem/memory
+  and fail with a generic `FS error`. A single overlay is simpler, faster,
+  and doesn't have that failure mode.
+- **Fade ghost's real bug — it could get stuck invisible:** the fade
+  in/out chain used to be built for an *estimated* video duration. If that
+  estimate was too short (e.g. a manually-entered duration was wrong, or
+  detection under-shot slightly), the chain would run out of segments
+  before the real video ended and — if the last defined segment happened to
+  be a fade-*out* — the logo would stay at alpha 0 (fully invisible) for
+  the rest of the video, which is exactly what "doesn't show up anywhere"
+  looks like when most of a clip plays past that point. `buildFadeChain`
+  now pads the estimate with a small buffer and, as a hard safety net,
+  never lets the generated chain end on a fade-out — if it would, one more
+  quick fade-in is appended so the tail always stays visible.
 - **Rendering speed:** the app uses `-preset ultrafast` and copies the audio
   stream untouched to minimize work, plus multi-threading when cross-origin
   isolation is available. It will still be bounded by the visitor's hardware

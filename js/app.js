@@ -501,13 +501,55 @@ function renderStaticLogoPNG() {
   return new Promise((resolve) => c.toBlob((b) => resolve({ blob: b, w: logoW, h: logoH }), "image/png"));
 }
 
-// Builds a chain of alternating alpha fade-out/fade-in segments covering the
+// Bake the ENTIRE diagonal-shield pattern (all tiles, at their final
+// per-tile opacity) into one full-video-resolution transparent PNG. This
+// replaces chaining many ffmpeg overlay filters together — which is what
+// was overwhelming the ffmpeg.wasm virtual filesystem/memory and causing
+// the "FS error" render failure — with a single, simple overlay.
+function renderShieldPNG() {
+  const W = state.videoMeta.width, H = state.videoMeta.height;
+  const cols = state.density, rows = state.density;
+  const cellW = W / cols, cellH = H / rows;
+  const logoW = Math.max(8, Math.round(W * (state.sizePct / 100)));
+  const logoH = Math.round(logoW * (state.logoImg.naturalHeight / state.logoImg.naturalWidth));
+
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const ctx = c.getContext("2d");
+
+  let idx = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let col = 0; col < cols; col++) {
+      const offset = (r % 2 === 1) ? cellW / 2 : 0;
+      const x = ((col * cellW + offset) % W) - logoW / 2 + cellW / 2 - logoW / 2;
+      const y = r * cellH + cellH / 2 - logoH / 2;
+      const alt = (idx % 2 === 0) ? 0.65 : 0.4;
+      ctx.save();
+      ctx.globalAlpha = state.opacity * alt;
+      ctx.drawImage(state.logoImg, x, y, logoW, logoH);
+      if (state.tintStrength > 0) {
+        ctx.globalCompositeOperation = "source-atop";
+        ctx.globalAlpha = state.opacity * alt * state.tintStrength;
+        ctx.fillStyle = state.tintColor;
+        ctx.fillRect(x, y, logoW, logoH);
+      }
+      ctx.restore();
+      idx++;
+    }
+  }
+  return new Promise((resolve) => c.toBlob((b) => resolve({ blob: b, w: W, h: H }), "image/png"));
+}
 // full video duration, for the "fade ghost" variant. Pure ffmpeg filters —
 // no pre-recorded clip involved, so there's no alpha-encoding step that can
 // go wrong.
 function buildFadeChain(duration, animSpeed = 1) {
   const half = 1.5 / Math.max(0.1, animSpeed); // seconds per half-cycle
-  const D = Math.max(duration || 6, half * 2);
+  // Use the real (detected or manually entered) duration plus a small
+  // buffer, rather than stretching every chain out to some arbitrary large
+  // duration "just in case" — chaining hundreds of unnecessary fade filters
+  // adds real parse/init overhead to every render. If duration is missing
+  // entirely, fall back to a generous default.
+  const D = Math.max((duration && duration > 0 ? duration : 60) + 3, half * 2);
   const parts = [];
   let t = 0, out = true;
   while (t < D - 0.01) {
@@ -515,6 +557,15 @@ function buildFadeChain(duration, animSpeed = 1) {
     parts.push(`fade=t=${out ? "out" : "in"}:st=${t.toFixed(2)}:d=${d.toFixed(2)}:alpha=1`);
     t += d;
     out = !out;
+  }
+  // Safety net: if the chain would end on a "fade out" (alpha settling at
+  // 0), the logo would stay invisible for any part of the video beyond our
+  // duration estimate — which is exactly what made the "Fade ghost" variant
+  // disappear entirely when the detected/entered duration was too short.
+  // `out` reflects the type of the NEXT segment that would be pushed, so
+  // out === false here means the last one actually pushed was "out".
+  if (!out) {
+    parts.push(`fade=t=in:st=${t.toFixed(2)}:d=${Math.min(half, 2).toFixed(2)}:alpha=1`);
   }
   return parts.join(",");
 }
@@ -531,7 +582,15 @@ async function handleRender() {
     const margin = Math.round(W * 0.02);
 
     setProgress(8, "Baking logo layer…");
-    const asset = await renderStaticLogoPNG();
+    // Diagonal Shield is composited as ONE full-frame transparent PNG
+    // (all tiles drawn once on canvas, at their final per-tile opacity)
+    // instead of chaining a dozen-plus ffmpeg overlay filters together.
+    // Chaining that many overlays was the cause of the "FS error" render
+    // failure — it pushed the ffmpeg.wasm virtual filesystem/memory past
+    // what it could reliably handle. A single overlay is simpler, faster,
+    // and avoids that failure mode entirely.
+    const asset = state.variant === "shield" ? await renderShieldPNG() : await renderStaticLogoPNG();
+
     // Without an explicit framerate, a looped still image defaults to 25 fps
     // in ffmpeg. If the source video runs at 30/50/60 fps, the overlay has to
     // reuse the same logo frame for several video frames in a row, which is
@@ -540,37 +599,18 @@ async function handleRender() {
     // video frame rate, so the overlay always has a fresh value to draw.
     const overlayInputArgs = ["-loop", "1", "-framerate", "60", "-i", "logo.png"];
 
-    // Shared first stage for every variant: give the PNG a real alpha
-    // channel and apply the requested opacity as a constant multiplier.
-    // Everything downstream (position, animation) works on top of this.
+    // Shared first stage for every variant except shield (which already
+    // bakes its own per-tile opacity into the PNG): give the PNG a real
+    // alpha channel and apply the requested opacity as a constant
+    // multiplier. Everything downstream (position, animation) works on
+    // top of this.
     const base = `[1:v]format=rgba,colorchannelmixer=aa=${state.opacity.toFixed(3)}`;
     let filterComplex;
 
     if (state.variant === "shield") {
-      const cols = state.density, rows = state.density;
-      const cellW = W / cols, cellH = H / rows;
-      const parts = [
-        `${base}[wmA]`,
-        `[wmA]split=2[wmA1][wmA2]`,
-        `[wmA1]colorchannelmixer=aa=0.65[wmHi]`,
-        `[wmA2]colorchannelmixer=aa=0.4[wmLo]`,
-      ];
-      let cur = "0:v";
-      let idx = 0;
-      const total = rows * cols;
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const offset = (r % 2 === 1) ? cellW / 2 : 0;
-          const x = Math.round(((c * cellW + offset) % W) - asset.w / 2 + cellW / 2 - asset.w / 2);
-          const y = Math.round(r * cellH + cellH / 2 - asset.h / 2);
-          const src = (idx % 2 === 0) ? "wmHi" : "wmLo";
-          const next = (idx === total - 1) ? "outv" : `t${idx}`;
-          parts.push(`[${cur}][${src}]overlay=x=${x}:y=${y}${idx === total - 1 ? ":shortest=1" : ""}[${next}]`);
-          cur = next;
-          idx++;
-        }
-      }
-      filterComplex = parts.join(";");
+      // asset is already the full WxH frame with tiles pre-composited —
+      // just lay it over the video at (0,0).
+      filterComplex = `[1:v]format=rgba[wm];[0:v][wm]overlay=x=0:y=0:shortest=1[outv]`;
 
     } else if (state.variant === "marquee") {
       const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
@@ -606,6 +646,15 @@ async function handleRender() {
       filterComplex = `${base}[wm];[0:v][wm]overlay=x=${Math.round(pos.x)}:y=${Math.round(pos.y)}:shortest=1[outv]`;
     }
 
+    // Many real-world clips (phone recordings, screen recordings, forwarded
+    // videos) are variable frame rate. Our time-based expressions (marquee's
+    // x position, pulse's scale, rotate's angle) are each evaluated
+    // correctly for a frame's true timestamp, but if the frames themselves
+    // arrive at uneven intervals, the resulting motion still looks jittery
+    // or "trembling" during playback. Resampling the main video to a solid
+    // constant frame rate before compositing fixes that at the source.
+    filterComplex = `[0:v]fps=30[vbase];` + filterComplex.split("[0:v]").join("[vbase]");
+
     setProgress(20, "Loading render engine…");
     const ffmpeg = await loadFFmpeg((msg) => { /* console.debug(msg) */ });
     ffmpeg.on("progress", ({ progress }) => {
@@ -623,6 +672,7 @@ async function handleRender() {
       ...overlayInputArgs,
       "-filter_complex", filterComplex,
       "-map", "[outv]", "-map", "0:a?",
+      "-fps_mode", "cfr",
       "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
       "-c:a", "copy",
       "-movflags", "+faststart",
