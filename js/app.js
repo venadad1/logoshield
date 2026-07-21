@@ -539,87 +539,35 @@ function renderShieldPNG() {
   }
   return new Promise((resolve) => c.toBlob((b) => resolve({ blob: b, w: W, h: H }), "image/png"));
 }
-
-
-const SEQUENCE_VARIANTS = ["marquee", "pulse", "rotate", "fade"];
-
-// Pre-bakes one full animation cycle as a sequence of full-resolution
-// transparent PNGs (position/scale/rotation/alpha already applied per
-// frame), instead of asking ffmpeg to evaluate the animation live via
-// filter expressions (scale eval=frame, rotate=a='t*rate', chained fade
-// filters). Native ffmpeg handles those expressions correctly in every
-// test we ran, but the single-threaded ffmpeg.wasm build in the browser
-// kept producing stutter/invisible-logo bugs that weren't reproducible
-// outside it — so rather than keep chasing a WASM-specific filter quirk we
-// can't directly test, this removes the dynamic expressions entirely.
-// ffmpeg's job is reduced to the most basic, bulletproof operation there
-// is: loop N images, overlay the current one at (0,0).
-async function renderAnimationSequence(variant) {
-  const W = state.videoMeta.width, H = state.videoMeta.height;
-  const margin = Math.round(W * 0.02);
-  const logoW = Math.max(8, Math.round(W * (state.sizePct / 100)));
-  const logoH = Math.round(logoW * (state.logoImg.naturalHeight / state.logoImg.naturalWidth));
-  const pos = positionXY(state.position, W, H, logoW, logoH, margin);
-
-  const cycleSeconds = variant === "marquee"
-    ? (W + logoW) / Math.max(10, state.speed)
-    : 3 / Math.max(0.1, state.animSpeed);
-
-  // Enough frames for a smooth loop without writing an unreasonable number
-  // of files: target ~15 fps of animation resolution, floor 24, cap 90.
-  const N = Math.min(90, Math.max(24, Math.round(cycleSeconds * 15)));
-
-  const drawTinted = (ctx, x, y, w, h, alphaMul) => {
-    ctx.save();
-    ctx.globalAlpha = state.opacity * alphaMul;
-    ctx.drawImage(state.logoImg, x, y, w, h);
-    if (state.tintStrength > 0) {
-      ctx.globalCompositeOperation = "source-atop";
-      ctx.globalAlpha = state.opacity * alphaMul * state.tintStrength;
-      ctx.fillStyle = state.tintColor;
-      ctx.fillRect(x, y, w, h);
-    }
-    ctx.restore();
-  };
-
-  const frames = [];
-  for (let i = 0; i < N; i++) {
-    const phase = i / N;
-    const c = document.createElement("canvas");
-    c.width = W; c.height = H;
-    const ctx = c.getContext("2d");
-
-    if (variant === "marquee") {
-      const span = W + logoW;
-      drawTinted(ctx, phase * span - logoW, pos.y, logoW, logoH, 1);
-    } else if (variant === "pulse") {
-      const s = 1 + 0.08 * Math.sin(2 * Math.PI * phase);
-      const w = logoW * s, h = logoH * s;
-      const cx = pos.x + logoW / 2, cy = pos.y + logoH / 2;
-      drawTinted(ctx, cx - w / 2, cy - h / 2, w, h, 1);
-    } else if (variant === "rotate") {
-      const cx = pos.x + logoW / 2, cy = pos.y + logoH / 2;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(2 * Math.PI * phase);
-      ctx.globalAlpha = state.opacity;
-      ctx.drawImage(state.logoImg, -logoW / 2, -logoH / 2, logoW, logoH);
-      if (state.tintStrength > 0) {
-        ctx.globalCompositeOperation = "source-atop";
-        ctx.globalAlpha = state.opacity * state.tintStrength;
-        ctx.fillStyle = state.tintColor;
-        ctx.fillRect(-logoW / 2, -logoH / 2, logoW, logoH);
-      }
-      ctx.restore();
-    } else if (variant === "fade") {
-      const a = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(2 * Math.PI * phase));
-      drawTinted(ctx, pos.x, pos.y, logoW, logoH, a);
-    }
-
-    frames.push(await new Promise((resolve) => c.toBlob(resolve, "image/png")));
+// full video duration, for the "fade ghost" variant. Pure ffmpeg filters —
+// no pre-recorded clip involved, so there's no alpha-encoding step that can
+// go wrong.
+function buildFadeChain(duration, animSpeed = 1) {
+  const half = 1.5 / Math.max(0.1, animSpeed); // seconds per half-cycle
+  // Use the real (detected or manually entered) duration plus a small
+  // buffer, rather than stretching every chain out to some arbitrary large
+  // duration "just in case" — chaining hundreds of unnecessary fade filters
+  // adds real parse/init overhead to every render. If duration is missing
+  // entirely, fall back to a generous default.
+  const D = Math.max((duration && duration > 0 ? duration : 60) + 3, half * 2);
+  const parts = [];
+  let t = 0, out = true;
+  while (t < D - 0.01) {
+    const d = Math.min(half, D - t);
+    parts.push(`fade=t=${out ? "out" : "in"}:st=${t.toFixed(2)}:d=${d.toFixed(2)}:alpha=1`);
+    t += d;
+    out = !out;
   }
-
-  return { frames, fps: N / cycleSeconds };
+  // Safety net: if the chain would end on a "fade out" (alpha settling at
+  // 0), the logo would stay invisible for any part of the video beyond our
+  // duration estimate — which is exactly what made the "Fade ghost" variant
+  // disappear entirely when the detected/entered duration was too short.
+  // `out` reflects the type of the NEXT segment that would be pushed, so
+  // out === false here means the last one actually pushed was "out".
+  if (!out) {
+    parts.push(`fade=t=in:st=${t.toFixed(2)}:d=${Math.min(half, 2).toFixed(2)}:alpha=1`);
+  }
+  return parts.join(",");
 }
 
 async function handleRender() {
@@ -632,9 +580,8 @@ async function handleRender() {
   try {
     const W = state.videoMeta.width, H = state.videoMeta.height;
     const margin = Math.round(W * 0.02);
-    const isSequence = SEQUENCE_VARIANTS.includes(state.variant);
 
-    setProgress(8, isSequence ? "Baking animation frames…" : "Baking logo layer…");
+    setProgress(8, "Baking logo layer…");
     // Diagonal Shield is composited as ONE full-frame transparent PNG
     // (all tiles drawn once on canvas, at their final per-tile opacity)
     // instead of chaining a dozen-plus ffmpeg overlay filters together.
@@ -642,42 +589,70 @@ async function handleRender() {
     // failure — it pushed the ffmpeg.wasm virtual filesystem/memory past
     // what it could reliably handle. A single overlay is simpler, faster,
     // and avoids that failure mode entirely.
-    let asset = null, sequence = null;
-    if (isSequence) {
-      sequence = await renderAnimationSequence(state.variant);
-    } else if (state.variant === "shield") {
-      asset = await renderShieldPNG();
-    } else {
-      asset = await renderStaticLogoPNG();
-    }
+    const asset = state.variant === "shield" ? await renderShieldPNG() : await renderStaticLogoPNG();
 
-    let overlayInputArgs, filterComplex;
+    // Without an explicit framerate, a looped still image defaults to 25 fps
+    // in ffmpeg. If the source video runs at 30/50/60 fps, the overlay has to
+    // reuse the same logo frame for several video frames in a row, which is
+    // exactly what makes pulse/rotate/fade/marquee look like they stutter
+    // instead of animating smoothly. Forcing 60 fps here covers every common
+    // video frame rate, so the overlay always has a fresh value to draw.
+    const overlayInputArgs = ["-loop", "1", "-framerate", "60", "-i", "logo.png"];
 
-    if (isSequence) {
-      // Frame-per-position sequence: nothing left for ffmpeg to compute,
-      // just loop the images and lay the current one straight over the
-      // video at (0,0).
-      overlayInputArgs = ["-loop", "1", "-framerate", sequence.fps.toFixed(3), "-i", "f%03d.png"];
-      filterComplex = `[0:v][1:v]overlay=x=0:y=0:shortest=1[outv]`;
-    } else if (state.variant === "shield") {
-      // Without an explicit framerate, a looped still image defaults to 25
-      // fps in ffmpeg regardless of the source video's actual rate.
-      overlayInputArgs = ["-loop", "1", "-framerate", "60", "-i", "logo.png"];
+    // Shared first stage for every variant except shield (which already
+    // bakes its own per-tile opacity into the PNG): give the PNG a real
+    // alpha channel and apply the requested opacity as a constant
+    // multiplier. Everything downstream (position, animation) works on
+    // top of this.
+    const base = `[1:v]format=rgba,colorchannelmixer=aa=${state.opacity.toFixed(3)}`;
+    let filterComplex;
+
+    if (state.variant === "shield") {
       // asset is already the full WxH frame with tiles pre-composited —
       // just lay it over the video at (0,0).
       filterComplex = `[1:v]format=rgba[wm];[0:v][wm]overlay=x=0:y=0:shortest=1[outv]`;
+
+    } else if (state.variant === "marquee") {
+      const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
+      const span = W + asset.w;
+      filterComplex = `${base}[wm];[0:v][wm]overlay=x='mod(t*${state.speed}\,${span})-${asset.w}':y=${Math.round(pos.y)}:shortest=1[outv]`;
+
+    } else if (state.variant === "pulse") {
+      const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
+      const cx = pos.x + asset.w / 2, cy = pos.y + asset.h / 2;
+      const rate = (2 * Math.PI * state.animSpeed / 3).toFixed(4);
+      filterComplex =
+        `${base}[wmA];` +
+        `[wmA]scale=w='iw*(1+0.08*sin(${rate}*t))':h='ih*(1+0.08*sin(${rate}*t))':eval=frame[wm];` +
+        `[0:v][wm]overlay=x='${cx}-w/2':y='${cy}-h/2':shortest=1[outv]`;
+
+    } else if (state.variant === "rotate") {
+      const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
+      const cx = pos.x + asset.w / 2, cy = pos.y + asset.h / 2;
+      const rate = (0.6 * state.animSpeed).toFixed(4);
+      filterComplex =
+        `${base}[wmA];` +
+        `[wmA]rotate=a='t*${rate}':ow='hypot(iw\,ih)':oh='hypot(iw\,ih)':c=none[wm];` +
+        `[0:v][wm]overlay=x='${cx}-w/2':y='${cy}-h/2':shortest=1[outv]`;
+
+    } else if (state.variant === "fade") {
+      const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
+      const fadeChain = buildFadeChain(state.videoMeta.duration, state.animSpeed);
+      filterComplex = `${base},${fadeChain}[wm];[0:v][wm]overlay=x=${Math.round(pos.x)}:y=${Math.round(pos.y)}:shortest=1[outv]`;
+
     } else {
       // static corner (default)
-      overlayInputArgs = ["-loop", "1", "-framerate", "60", "-i", "logo.png"];
-      const base = `[1:v]format=rgba,colorchannelmixer=aa=${state.opacity.toFixed(3)}`;
       const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
       filterComplex = `${base}[wm];[0:v][wm]overlay=x=${Math.round(pos.x)}:y=${Math.round(pos.y)}:shortest=1[outv]`;
     }
 
     // Many real-world clips (phone recordings, screen recordings, forwarded
-    // videos) are variable frame rate, which can make any compositing look
-    // slightly uneven. Resampling the main video to a solid constant frame
-    // rate before compositing avoids that.
+    // videos) are variable frame rate. Our time-based expressions (marquee's
+    // x position, pulse's scale, rotate's angle) are each evaluated
+    // correctly for a frame's true timestamp, but if the frames themselves
+    // arrive at uneven intervals, the resulting motion still looks jittery
+    // or "trembling" during playback. Resampling the main video to a solid
+    // constant frame rate before compositing fixes that at the source.
     filterComplex = `[0:v]fps=30[vbase];` + filterComplex.split("[0:v]").join("[vbase]");
 
     setProgress(20, "Loading render engine…");
@@ -689,15 +664,7 @@ async function handleRender() {
     const inExt = (state.videoFile.name.split(".").pop() || "mp4").toLowerCase();
     const inName = "input." + inExt;
     await ffmpeg.writeFile(inName, new Uint8Array(await state.videoFile.arrayBuffer()));
-
-    if (isSequence) {
-      for (let i = 0; i < sequence.frames.length; i++) {
-        const name = `f${String(i).padStart(3, "0")}.png`;
-        await ffmpeg.writeFile(name, new Uint8Array(await sequence.frames[i].arrayBuffer()));
-      }
-    } else {
-      await ffmpeg.writeFile("logo.png", new Uint8Array(await asset.blob.arrayBuffer()));
-    }
+    await ffmpeg.writeFile("logo.png", new Uint8Array(await asset.blob.arrayBuffer()));
 
     const outName = "output.mp4";
     const args = [
@@ -706,8 +673,7 @@ async function handleRender() {
       "-filter_complex", filterComplex,
       "-map", "[outv]", "-map", "0:a?",
       "-fps_mode", "cfr",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-      "-g", "60", "-keyint_min", "30", "-sc_threshold", "0",
+      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
       "-c:a", "copy",
       "-movflags", "+faststart",
       outName,
