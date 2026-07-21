@@ -148,10 +148,19 @@ multi-thread speed boost.
   now pads the estimate with a small buffer and, as a hard safety net,
   never lets the generated chain end on a fade-out — if it would, one more
   quick fade-in is appended so the tail always stays visible.
-- **Rendering speed:** the app uses `-preset ultrafast` and copies the audio
-  stream untouched to minimize work, plus multi-threading when cross-origin
-  isolation is available. It will still be bounded by the visitor's hardware
-  — a browser tab is not a render farm.
+- **Rendering speed:** the app uses `-preset veryfast` (a step up from the
+  fastest `ultrafast` preset) with an explicit, regular keyframe interval
+  (`-g 60 -keyint_min 30 -sc_threshold 0`) and copies the audio track
+  untouched to minimize work, plus multi-threading when cross-origin
+  isolation is available. `ultrafast` was tried first and encodes faster,
+  but its very aggressive scene-cut detection produces irregular keyframe
+  placement that some players/devices decode less smoothly — exactly the
+  kind of subtle stutter that kept getting reported for the animated
+  variants even after the frame-rate fixes above checked out fine
+  frame-by-frame in testing. `veryfast` with a fixed GOP structure is a
+  small, worthwhile trade-off for meaningfully more consistent playback. It
+  will still be bounded by the visitor's hardware — a browser tab is not a
+  render farm.
 
 ## File map
 
