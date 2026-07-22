@@ -105,31 +105,29 @@ multi-thread speed boost.
   but everything runs in the visitor's browser tab, so the real limit is
   their device's RAM/CPU. Very long or high-resolution sources will be slower
   and more memory-hungry than a server-grade encoder would be.
-- **Animated variants (pulse / rotate / fade):** these are built entirely
-  inside the ffmpeg filter graph using time-based expressions (`scale`
-  with `eval=frame`, `rotate=a='t*...'`, chained `fade` filters), applied to
-  a single still transparent PNG. There's no intermediate recorded video
-  clip involved. This matters: browsers don't reliably encode a real alpha
-  channel through `MediaRecorder` (an earlier version of this tool tried
-  that and produced a solid black box behind the logo in the export instead
-  of transparency), so keeping the whole pipeline PNG-in → ffmpeg-filters →
-  MP4-out avoids that failure mode entirely.
-- **Smooth animation, any video frame rate:** the looped logo PNG input is
-  forced to `-framerate 60`. Without it, ffmpeg defaults a looped still
-  image to 25 fps regardless of the source video's actual rate — so a
-  30/50/60 fps video would only get a fresh logo frame every couple of
-  video frames, and pulse/rotate/fade/marquee would visibly stutter instead
-  of animating smoothly. 60 fps comfortably covers every common video frame
-  rate.
-- **Constant frame rate normalization:** the main video is always passed
-  through `fps=30` before compositing, and the output is encoded with
-  `-fps_mode cfr`. Many real-world clips (phone recordings, screen
-  recordings, forwarded videos) are variable frame rate — our time-based
-  expressions (marquee's x position, pulse's scale, rotate's angle) are each
-  evaluated correctly for a frame's true timestamp, but if the underlying
-  frames arrive at uneven intervals, the resulting motion still looks
-  jittery/trembling on playback even though the math is technically
-  correct. Resampling to a solid constant rate fixes that at the source.
+- **Animated variants (marquee / pulse / rotate / fade) are pre-baked PNG
+  sequences, not live ffmpeg filter math:** earlier versions asked ffmpeg
+  itself to animate the logo live, using time-based filter expressions
+  (`scale` with `eval=frame`, `rotate=a='t*...'`, chained `fade` filters,
+  `overlay` position expressions with `mod()`). Every one of those checked
+  out as mathematically smooth and frame-accurate in extensive testing with
+  a native ffmpeg build — but real users kept seeing stutter, trembling, or
+  (for fade) the logo never appearing at all in the actual browser render.
+  ffmpeg.wasm's `@ffmpeg/ffmpeg` package explicitly refuses to run outside a
+  browser (`ffmpeg.wasm does not support nodejs`), so that discrepancy
+  couldn't be reproduced or debugged directly in this environment. Rather
+  than keep guessing at a WASM-specific quirk in those more advanced filter
+  features, `renderAnimationSequence()` now pre-renders one full animation
+  cycle as a sequence of full-resolution transparent PNGs (position, scale,
+  rotation, and alpha already baked into each frame via canvas, which is
+  reliable), and ffmpeg's job is reduced to the most basic operation there
+  is: `-loop 1 -framerate <fps> -i f%03d.png`, then `overlay=x=0:y=0`. No
+  scale/rotate/fade filters, no expressions, no dependency on guessing the
+  video's duration — which also means fade can no longer get stuck
+  invisible, since it doesn't need to know how long the video is at all.
+  Frame count targets ~15 fps of animation resolution (floor 24, cap 90 per
+  cycle) as a balance between smoothness and the number of files written
+  per render.
 - **Diagonal Shield renders as one overlay, not a dozen-plus:** the tiled
   pattern (all tiles, at their final per-tile opacity) is composited once,
   client-side, into a single full-resolution transparent PNG. An earlier
@@ -137,21 +135,24 @@ multi-thread speed boost.
   density), which could overwhelm the ffmpeg.wasm virtual filesystem/memory
   and fail with a generic `FS error`. A single overlay is simpler, faster,
   and doesn't have that failure mode.
-- **Fade ghost's real bug — it could get stuck invisible:** the fade
-  in/out chain used to be built for an *estimated* video duration. If that
-  estimate was too short (e.g. a manually-entered duration was wrong, or
-  detection under-shot slightly), the chain would run out of segments
-  before the real video ended and — if the last defined segment happened to
-  be a fade-*out* — the logo would stay at alpha 0 (fully invisible) for
-  the rest of the video, which is exactly what "doesn't show up anywhere"
-  looks like when most of a clip plays past that point. `buildFadeChain`
-  now pads the estimate with a small buffer and, as a hard safety net,
-  never lets the generated chain end on a fade-out — if it would, one more
-  quick fade-in is appended so the tail always stays visible.
-- **Rendering speed:** the app uses `-preset ultrafast` and copies the audio
-  stream untouched to minimize work, plus multi-threading when cross-origin
-  isolation is available. It will still be bounded by the visitor's hardware
-  — a browser tab is not a render farm.
+- **Constant frame rate normalization:** the main video is always passed
+  through `fps=30` before compositing, and the output is encoded with
+  `-fps_mode cfr`, since many real-world clips (phone recordings, screen
+  recordings, forwarded videos) are variable frame rate and that alone can
+  make compositing look uneven regardless of what's being overlaid.
+- **Rendering speed:** the app uses `-preset veryfast` (a step up from the
+  fastest `ultrafast` preset) with an explicit, regular keyframe interval
+  (`-g 60 -keyint_min 30 -sc_threshold 0`) and copies the audio track
+  untouched to minimize work, plus multi-threading when cross-origin
+  isolation is available. `ultrafast` was tried first and encodes faster,
+  but its very aggressive scene-cut detection produces irregular keyframe
+  placement that some players/devices decode less smoothly — exactly the
+  kind of subtle stutter that kept getting reported for the animated
+  variants even after the frame-rate fixes above checked out fine
+  frame-by-frame in testing. `veryfast` with a fixed GOP structure is a
+  small, worthwhile trade-off for meaningfully more consistent playback. It
+  will still be bounded by the visitor's hardware — a browser tab is not a
+  render farm.
 
 ## File map
 
