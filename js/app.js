@@ -541,19 +541,20 @@ function renderShieldPNG() {
 }
 
 
-const SEQUENCE_VARIANTS = ["marquee", "pulse", "rotate", "fade"];
+const SEQUENCE_VARIANTS = ["pulse", "rotate", "fade"];
 
 // Pre-bakes one full animation cycle as a sequence of full-resolution
 // transparent PNGs (position/scale/rotation/alpha already applied per
 // frame), instead of asking ffmpeg to evaluate the animation live via
 // filter expressions (scale eval=frame, rotate=a='t*rate', chained fade
-// filters). Native ffmpeg handles those expressions correctly in every
-// test we ran, but the single-threaded ffmpeg.wasm build in the browser
-// kept producing stutter/invisible-logo bugs that weren't reproducible
-// outside it — so rather than keep chasing a WASM-specific filter quirk we
-// can't directly test, this removes the dynamic expressions entirely.
-// ffmpeg's job is reduced to the most basic, bulletproof operation there
-// is: loop N images, overlay the current one at (0,0).
+// filters). This works great for pulse/rotate/fade because they're subtle,
+// slow-cycling effects where ~15 fps of animation resolution is plenty.
+// Marquee is deliberately NOT in this list: it's fast, continuous,
+// full-width translation, and hitting a smooth-looking fps for that would
+// require several hundred pre-baked frames for a typical slide speed —
+// impractical to generate and write per render. It uses a live ffmpeg
+// position expression instead (see buildMarqueeFilter below), which
+// updates every output frame at the video's true frame rate.
 async function renderAnimationSequence(variant) {
   const W = state.videoMeta.width, H = state.videoMeta.height;
   const margin = Math.round(W * 0.02);
@@ -561,9 +562,7 @@ async function renderAnimationSequence(variant) {
   const logoH = Math.round(logoW * (state.logoImg.naturalHeight / state.logoImg.naturalWidth));
   const pos = positionXY(state.position, W, H, logoW, logoH, margin);
 
-  const cycleSeconds = variant === "marquee"
-    ? (W + logoW) / Math.max(10, state.speed)
-    : 3 / Math.max(0.1, state.animSpeed);
+  const cycleSeconds = 3 / Math.max(0.1, state.animSpeed);
 
   // Enough frames for a smooth loop without writing an unreasonable number
   // of files: target ~15 fps of animation resolution, floor 24, cap 90.
@@ -589,10 +588,7 @@ async function renderAnimationSequence(variant) {
     c.width = W; c.height = H;
     const ctx = c.getContext("2d");
 
-    if (variant === "marquee") {
-      const span = W + logoW;
-      drawTinted(ctx, phase * span - logoW, pos.y, logoW, logoH, 1);
-    } else if (variant === "pulse") {
+    if (variant === "pulse") {
       const s = 1 + 0.08 * Math.sin(2 * Math.PI * phase);
       const w = logoW * s, h = logoH * s;
       const cx = pos.x + logoW / 2, cy = pos.y + logoH / 2;
@@ -666,6 +662,17 @@ async function handleRender() {
       // asset is already the full WxH frame with tiles pre-composited —
       // just lay it over the video at (0,0).
       filterComplex = `[1:v]format=rgba[wm];[0:v][wm]overlay=x=0:y=0:shortest=1[outv]`;
+    } else if (state.variant === "marquee") {
+      overlayInputArgs = ["-loop", "1", "-framerate", "60", "-i", "logo.png"];
+      const base = `[1:v]format=rgba,colorchannelmixer=aa=${state.opacity.toFixed(3)}`;
+      const pos = positionXY(state.position, W, H, asset.w, asset.h, margin);
+      const span = W + asset.w;
+      // x is re-evaluated by the overlay filter on every single output
+      // frame (it follows the main video's own timeline), so this slides at
+      // the video's true frame rate — smooth regardless of speed, unlike a
+      // pre-baked frame sequence which would need hundreds of frames to
+      // look this fluid for full-width motion.
+      filterComplex = `${base}[wm];[0:v][wm]overlay=x='mod(t*${state.speed}\\,${span})-${asset.w}':y=${Math.round(pos.y)}:shortest=1[outv]`;
     } else {
       // static corner (default)
       overlayInputArgs = ["-loop", "1", "-framerate", "60", "-i", "logo.png"];

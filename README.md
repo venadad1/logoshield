@@ -105,29 +105,42 @@ multi-thread speed boost.
   but everything runs in the visitor's browser tab, so the real limit is
   their device's RAM/CPU. Very long or high-resolution sources will be slower
   and more memory-hungry than a server-grade encoder would be.
-- **Animated variants (marquee / pulse / rotate / fade) are pre-baked PNG
-  sequences, not live ffmpeg filter math:** earlier versions asked ffmpeg
-  itself to animate the logo live, using time-based filter expressions
-  (`scale` with `eval=frame`, `rotate=a='t*...'`, chained `fade` filters,
-  `overlay` position expressions with `mod()`). Every one of those checked
-  out as mathematically smooth and frame-accurate in extensive testing with
-  a native ffmpeg build — but real users kept seeing stutter, trembling, or
-  (for fade) the logo never appearing at all in the actual browser render.
-  ffmpeg.wasm's `@ffmpeg/ffmpeg` package explicitly refuses to run outside a
-  browser (`ffmpeg.wasm does not support nodejs`), so that discrepancy
-  couldn't be reproduced or debugged directly in this environment. Rather
-  than keep guessing at a WASM-specific quirk in those more advanced filter
-  features, `renderAnimationSequence()` now pre-renders one full animation
-  cycle as a sequence of full-resolution transparent PNGs (position, scale,
-  rotation, and alpha already baked into each frame via canvas, which is
-  reliable), and ffmpeg's job is reduced to the most basic operation there
-  is: `-loop 1 -framerate <fps> -i f%03d.png`, then `overlay=x=0:y=0`. No
-  scale/rotate/fade filters, no expressions, no dependency on guessing the
-  video's duration — which also means fade can no longer get stuck
-  invisible, since it doesn't need to know how long the video is at all.
-  Frame count targets ~15 fps of animation resolution (floor 24, cap 90 per
-  cycle) as a balance between smoothness and the number of files written
-  per render.
+- **Pulse / Rotate / Fade are pre-baked PNG sequences, not live ffmpeg
+  filter math:** earlier versions asked ffmpeg itself to animate the logo
+  live, using time-based filter expressions (`scale` with `eval=frame`,
+  `rotate=a='t*...'`, chained `fade` filters). Those checked out as
+  mathematically smooth and frame-accurate in extensive testing with a
+  native ffmpeg build, but real users kept seeing stutter/trembling, or
+  (for fade) the logo never appearing at all — later traced mostly to the
+  render pipeline not checking ffmpeg's actual exit code (see below), but
+  rather than re-introduce the more advanced filter expressions,
+  `renderAnimationSequence()` pre-renders one full animation cycle as a
+  sequence of full-resolution transparent PNGs (position/scale/rotation/
+  alpha already baked into each frame via canvas), and ffmpeg's job is
+  reduced to the most basic operation there is: `-loop 1 -framerate <fps>
+  -i f%03d.png`, then `overlay=x=0:y=0`. This works well for these three
+  because they're subtle, slow-cycling effects where ~15 fps of animation
+  resolution (floor 24, cap 90 frames per cycle) is visually plenty.
+- **Sliding marquee stays on a live ffmpeg position expression, not a
+  sequence:** the pre-baked approach above was tried for marquee too, but
+  it made the slide look distinctly robotic/steppy. Full-width continuous
+  translation needs a much higher update rate than a slow pulse or rotation
+  does — hitting a smooth-looking fps for a multi-second, full-screen slide
+  would mean pre-baking hundreds of frames, which isn't practical to
+  generate and write per render. Marquee instead uses
+  `overlay=x='mod(t*speed,span)-w'`, which ffmpeg re-evaluates on every
+  single output frame at the video's true frame rate — smooth by
+  construction, and now that render failures are actually caught (below)
+  there's no reason to expect the same silent-corruption issue that made
+  everything look broken before.
+- **The render pipeline now actually checks whether it worked:** earlier
+  versions ignored `ffmpeg.exec()`'s return value (an exit code — 0 for
+  success) and never sanity-checked the output file size, so an encode that
+  failed partway through could still produce a small/corrupt file that got
+  handed to the person as a "ready" download — a file that looked done
+  instantly but had no playable video in it. The render now throws (and
+  surfaces ffmpeg's own recent log lines) if the exit code is non-zero or
+  the output is implausibly small.
 - **Diagonal Shield renders as one overlay, not a dozen-plus:** the tiled
   pattern (all tiles, at their final per-tile opacity) is composited once,
   client-side, into a single full-resolution transparent PNG. An earlier
